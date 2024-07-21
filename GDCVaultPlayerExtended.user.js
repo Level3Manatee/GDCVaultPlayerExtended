@@ -55,7 +55,7 @@ const Actions = {
     keys: {
       "ArrowLeft": false
     },
-    execute: function () { Seek(-5.0); },
+    execute: function () { return Promise.resolve( Seek(-5.0) ); },
     osd: function () { osdTimeDisplay.updateTextNode_(player.currentTime()); return osdTimeDisplay.formattedTime_; }
   },
   SeekForward: {
@@ -63,7 +63,7 @@ const Actions = {
     keys: {
       "ArrowRight": false
     },
-    execute: function () { Seek(10.0); },
+    execute: function () { return Promise.resolve( Seek(10.0) ); },
     osd: function () { osdTimeDisplay.updateTextNode_(player.currentTime()); return osdTimeDisplay.formattedTime_; }
   },
   VolumeDown: {
@@ -71,7 +71,7 @@ const Actions = {
     keys: {
       "ArrowDown": true
     },
-    execute: function () { Volume(-0.1); },
+    execute: function () { return Promise.resolve( Volume(-0.1) ); },
     osd: function () { return `Vol ${player.volume().toFixed(1)}`; }
   },
   VolumeUp: {
@@ -79,7 +79,7 @@ const Actions = {
     keys: {
       "ArrowUp": true
     },
-    execute: function () { Volume(0.1); },
+    execute: function () { return Promise.resolve( Volume(0.1) ); },
     osd: function () { return `Vol ${player.volume().toFixed(1)}`; }
   },
   CycleMonoStereo: {
@@ -102,14 +102,14 @@ const Actions = {
     keys: {
       ",": false
     },
-    execute: function () { SeekFrame(-1); }
+    execute: function () { return Promise.resolve( SeekFrame(-1) ); }
   },
   NextFrame: {
     name: "Next frame",
     keys: {
       ".": false
     },
-    execute: function () { SeekFrame(1); }
+    execute: function () { return Promise.resolve( SeekFrame(1) ); }
   },
   PlaybackSlower: {
     name: "Decrease playback speed",
@@ -117,7 +117,7 @@ const Actions = {
       "<": false,
       "[": false
     },
-    execute: function () { PlaybackRate(-1); },
+    execute: function () { return Promise.resolve( PlaybackRate(-1) ); },
     osd: function () { return `${playbackRate}x`; }
   },
   PlaybackFaster: {
@@ -126,7 +126,7 @@ const Actions = {
       ">": false,
       "]": false
     },
-    execute: function () { PlaybackRate(1); },
+    execute: function () { return Promise.resolve( PlaybackRate(1) ); },
     osd: function () { return `${playbackRate}x`; }
   },
   PlaybackDefault: {
@@ -134,7 +134,7 @@ const Actions = {
     keys: {
       "Backspace": false
     },
-    execute: function () { PlaybackRate(0); },
+    execute: function () { return Promise.resolve( PlaybackRate(0) ); },
     osd: function () { return `${playbackRate}x`; }
   },
   ToggleSubtitles: {
@@ -212,16 +212,16 @@ function DispatchAction (binding) {
   if (isIframe) {
     if (BindingsKeys[binding] === undefined)
       return;
-    BindingsKeys[binding].action.execute();
-    if (BindingsKeys[binding].action.osd !== undefined)
-      OSD(BindingsKeys[binding].action.osd);
-  } else {
-    // hacky
-    if (Object.keys(Actions["ToggleDarkMode"].keys).indexOf(binding) !== -1) {
-      ToggleDarkMode();
-    }
 
+    BindingsKeys[binding].action.execute().then(()=> {
+      if (BindingsKeys[binding].action.osd !== undefined)
+        OSD(BindingsKeys[binding].action.osd);
+    });
+  } else {
     switch (binding) {
+      case "ToggleDarkMode":
+        ToggleDarkMode();
+        break;
       case "Fullscreen":
         // Fullscreen needs to be applied to the iframe (container)
         Fullscreen();
@@ -251,138 +251,205 @@ function DispatchToParent (binding) {
  */
 
 
+let playFailed = false;
+let initialPlay = true;
 function Pause () {
-  player.paused() ? player.play() : player.pause();
+  initialPlay = false;
+  return new Promise((resolve, reject) => {
+    if (player.paused()) {
+      player.play().then(() => {
+        playFailed = false;
+        //OSD("Play");
+        resolve();
+      }).catch((error) => {
+        // play failed, likely due to autoplay restrictions (hi chrome)
+        playFailed = true;
+        ShowPlayButton();
+        reject();
+      });
+    } else {
+      player.pause();
+      //OSD("Pause");
+      resolve();
+    }
+  });
 }
 
 function Mute () {
-  player.muted(!player.muted());
+  return new Promise((resolve, reject) => {
+    player.muted(!player.muted());
+    resolve();
+  });
 }
 
 function Seek (offset) {
-  player.currentTime(player.currentTime() + offset);
+  return new Promise((resolve, reject) => {
+    player.currentTime(player.currentTime() + offset);
+    resolve();
+  });
 }
 
 function Volume (offset) {
-  if (player.muted())
-    Mute();
+  return new Promise((resolve, reject) => {
+    if (player.muted())
+      Mute();
 
-  player.volume(player.volume() + offset);
+    player.volume(player.volume() + offset);
+    resolve();
+  });
 }
 
 let audioChannelMode = 0;
 function CycleMonoStereo () {
-  audioChannelMode++;
-  if (audioChannelMode > 2)
-    audioChannelMode = 0;
+  return new Promise((resolve, reject) => {
+    audioChannelMode++;
+    if (audioChannelMode > 2)
+      audioChannelMode = 0;
 
-  if (!usingAudioContext)
-    InitializeAudioContext();
+    if (!usingAudioContext)
+      InitializeAudioContext();
 
-  try {
-    audioSplitter.disconnect(audioMerger);
-  } catch (e) {}
+    if (audioContext.state !== "running")
+      audioContext.resume();
 
-  switch (audioChannelMode) {
-    case 0: // stereo
-      audioSplitter.connect(audioMerger, 0, 0);
-      audioSplitter.connect(audioMerger, 1, 1);
-      break;
-    case 1: // mono, left channel
-      audioSplitter.connect(audioMerger, 0, 0);
-      audioSplitter.connect(audioMerger, 0, 1);
-      break;
-    case 2: // mono, right channel
-      audioSplitter.connect(audioMerger, 1, 0);
-      audioSplitter.connect(audioMerger, 1, 1);
-      break;
-  }
+    try {
+      audioSplitter.disconnect(audioMerger);
+    } catch (e) {}
+
+    switch (audioChannelMode) {
+      case 0: // stereo
+        audioSplitter.connect(audioMerger, 0, 0);
+        audioSplitter.connect(audioMerger, 1, 1);
+        resolve();
+        break;
+      case 1: // mono, left channel
+        audioSplitter.connect(audioMerger, 0, 0);
+        audioSplitter.connect(audioMerger, 0, 1);
+        resolve();
+        break;
+      case 2: // mono, right channel
+        audioSplitter.connect(audioMerger, 1, 0);
+        audioSplitter.connect(audioMerger, 1, 1);
+        resolve();
+        break;
+    }
+  });
 }
 
 
 function Fullscreen () {
-  if (isIframe) {
-    if (player.isFullscreen()) {
-      player.exitFullscreen();
-      return;
+  return new Promise((resolve, reject) => {
+    if (isIframe) {
+      if (player.isFullscreen()) {
+        player.exitFullscreen();
+        resolve();
+        return;
+      }
+
+      if (DispatchToParent("Fullscreen")) {
+        resolve();
+        return;
+      }
+
+      player.isFullscreen() ? player.exitFullscreen() : player.requestFullscreen();
     }
-
-    if (DispatchToParent("Fullscreen"))
-      return;
-
-    player.isFullscreen() ? player.exitFullscreen() : player.requestFullscreen();
-  }
-  else {
-    iframeIsFullscreen ? document.exitFullscreen() : iframeEl.requestFullscreen();
-  }
+    else {
+      iframeIsFullscreen ? document.exitFullscreen() : iframeEl.requestFullscreen();
+    }
+    resolve();
+  });
 }
 
 let playbackRate = "";
 function PlaybackRate (direction) {
-  if (direction === 0) {
-    player.playbackRate(1);
-    return;
-  }
-  const rates = player.playbackRates();
-  const newIndex = Math.min(rates.length-1, Math.max(0, rates.indexOf(player.playbackRate())+direction));
-  playbackRate = rates[newIndex];
-  player.playbackRate(playbackRate);
+  return new Promise((resolve, reject) => {
+    if (direction === 0) {
+      playbackRate = 1.0;
+      player.playbackRate(1);
+      resolve();
+      return;
+    }
+    const rates = player.playbackRates();
+    const newIndex = Math.min(rates.length-1, Math.max(0, rates.indexOf(player.playbackRate())+direction));
+    playbackRate = rates[newIndex];
+    player.playbackRate(playbackRate);
+    resolve();
+  });
 }
 
 function SeekFrame (frameOffset) {
-  player.pause();
-  Seek(frameDuration * frameOffset);
+  return new Promise((resolve, reject) => {
+    player.pause();
+    Seek(frameDuration * frameOffset);
+    resolve();
+  });
 }
 
 function ToggleSubtitles () {
-  if (SubsAreVisible()) {
-    player.textTrackDisplay.hide();
-    localStorage.setItem(`${videoId}-showSubtitles`, false);
-  } else {
-    player.textTrackDisplay.show();
-    localStorage.setItem(`${videoId}-showSubtitles`, true);
-  }
+  return new Promise((resolve, reject) => {
+    if (SubsAreVisible()) {
+      player.textTrackDisplay.hide();
+      localStorage.setItem(`${videoId}-showSubtitles`, false);
+    } else {
+      player.textTrackDisplay.show();
+      localStorage.setItem(`${videoId}-showSubtitles`, true);
+    }
+    resolve();
+  });
 }
 
 function CycleSubtitles () {
-  if (subtitles.length === 0)
-    return;
+  return new Promise((resolve, reject) => {
+    if (subtitles.length === 0) {
+      reject();
+      return;
+    }
 
-  if (subtitles[currentSubtitle] === undefined && subtitles.length <= 1)
-    return;
+    if (subtitles[currentSubtitle] === undefined && subtitles.length <= 1) {
+      reject();
+      return;
+    }
 
-  if (!SubsAreVisible())
-    ToggleSubtitles();
+    if (!SubsAreVisible())
+      ToggleSubtitles();
 
-  if (subtitles[currentSubtitle] !== undefined)
-    subtitles[currentSubtitle].mode = 'disabled';
+    if (subtitles[currentSubtitle] !== undefined)
+      subtitles[currentSubtitle].mode = 'disabled';
 
-  hangCheck = 0;
-  while (hangCheck < 100) {
-    currentSubtitle++;
-    if (currentSubtitle >= subtitles.length)
-      currentSubtitle = 0;
-    hangCheck++;
-    if (subtitles[currentSubtitle].kind === "subtitles" || subtitles[currentSubtitle].kind === "captions")
-      break;
-  }
-  subtitles[currentSubtitle].mode = 'showing';
-  localStorage.setItem(`${videoId}-subtitlesTrack`, subtitles[currentSubtitle].language);
+    let hangCheck = 0;
+    while (hangCheck < 100) {
+      currentSubtitle++;
+      if (currentSubtitle >= subtitles.length)
+        currentSubtitle = 0;
+      hangCheck++;
+      if (subtitles[currentSubtitle].kind === "subtitles" || subtitles[currentSubtitle].kind === "captions")
+        break;
+    }
+    subtitles[currentSubtitle].mode = 'showing';
+    localStorage.setItem(`${videoId}-subtitlesTrack`, subtitles[currentSubtitle].language);
+    resolve();
+  });
 }
 
 function ToggleModal () {
-  shortcutsModal.el().classList.contains("vjs-hidden") ? shortcutsModal.open() : shortcutsModal.close();
+    return new Promise((resolve, reject) => {
+      shortcutsModal.el().classList.contains("vjs-hidden") ? shortcutsModal.open() : shortcutsModal.close();
+      resolve();
+    });
 }
 
 function ToggleDarkMode () {
-  isDarkMode = !isDarkMode;
-  localStorage.setItem("darkmode", isDarkMode);
-  if (isIframe) {
-    darkModeButton.$('.vjs-icon-placeholder').textContent = isDarkMode ? "\u{263C}" : "\u{2600}";
-    DispatchToParent("ToggleDarkMode");
-  } else {
-    document.documentElement.classList.toggle("dark");
-  }
+  return new Promise((resolve, reject) => {
+    if (isIframe) {
+      isDarkMode = !isDarkMode;
+      localStorage.setItem("darkmode", isDarkMode);
+      darkModeButton.$('.vjs-icon-placeholder').textContent = isDarkMode ? "\u{263C}" : "\u{2600}";
+      DispatchToParent("ToggleDarkMode");
+    } else {
+      document.documentElement.classList.toggle("dark");
+    }
+    resolve();
+  });
 }
 
 function OSD (content) {
@@ -417,7 +484,7 @@ function HideOSD () {
 const playbackTime = isIframe ? parseFloat(localStorage.getItem(`${videoId}-time`) ?? 0) : null;
 let showSubtitles = isIframe ? (localStorage.getItem(`${videoId}-showSubtitles`) === 'true' ? true : false) : null;
 let subtitlesTrack = isIframe ? localStorage.getItem(`${videoId}-subtitlesTrack`) : null;
-let isDarkMode = localStorage.getItem("darkmode") === "true" ? true : false;
+let isDarkMode = isIframe ? (localStorage.getItem("darkmode") === "true" ? true : false) : null;
 
 
 if (!isIframe && isDarkMode) {
@@ -448,13 +515,18 @@ if (isIframe) {
     // Stop autoplay, unmute, and remove the unmute thing.
     videojs("my-video").on("play", evt =>{
       if (removedUnmuteThing) return;
-      player.pause();
-      player.muted(false);
       RemoveUnmuteThing();
+      player.muted(false);
     });
 
+    videojs("my-video").on("pause", evt =>{
+      if (!initialPlay) return;
+      ShowPlayButton();
+    });
+
+
     // Auto-save playback position every second
-    savePlaybackTime = setInterval(function () {
+    setInterval(function () {
       if (!hasRestoredPlaybackTime) return;
       localStorage.setItem(`${videoId}-time`, player.currentTime());
     }, 1000);
@@ -566,6 +638,15 @@ function AddDarkModeButton () {
     ToggleDarkMode();
   });
   darkModeButton.handleKeyDown = () => {};
+}
+
+
+//let playButton;
+function ShowPlayButton () {
+  /*if (!playButton) {
+    playButton = player.getChild("BigPlayButton");
+  }*/
+  player.hasStarted(false);
 }
 
 
