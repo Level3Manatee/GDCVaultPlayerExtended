@@ -5,11 +5,13 @@
 // @match       https://www.gdcvault.com/play/*
 // @match       https://gdcvault.blazestreaming.com/*
 // @grant       none
-// @version     1.0.1
+// @version     1.0.2
 // @author      Level3Manatee
 // @license     MIT
 // @description Extends GDC Vault player functionality: keyboard controls (see ? button), dark mode, stereo / mono toggle, ... and makes it bigger. Saves & restores playback position, subtitle settings and dark mode preference (LocalStorage)
 // @supportURL  https://github.com/Level3Manatee/GDCVaultPlayerExtended
+// @updateURL   https://github.com/Level3Manatee/GDCVaultPlayerExtended/raw/main/GDCVaultPlayerExtended.user.js
+// @downloadURL https://github.com/Level3Manatee/GDCVaultPlayerExtended/raw/main/GDCVaultPlayerExtended.user.js
 // ==/UserScript==
 
 /** Notes
