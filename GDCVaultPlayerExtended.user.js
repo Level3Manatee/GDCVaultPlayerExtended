@@ -5,7 +5,7 @@
 // @match       https://www.gdcvault.com/play/*
 // @match       https://gdcvault.blazestreaming.com/*
 // @grant       none
-// @version     1.0.2
+// @version     1.1.0
 // @author      Level3Manatee
 // @license     MIT
 // @description Extends GDC Vault player functionality: keyboard controls (see ? button), dark mode, stereo / mono toggle, ... and makes it bigger. Saves & restores playback position, subtitle settings and dark mode preference (LocalStorage)
@@ -266,7 +266,7 @@ function Pause () {
       }).catch((error) => {
         // play failed, likely due to autoplay restrictions (hi chrome)
         playFailed = true;
-        ShowPlayButton();
+        ResetPlayerHasStarted();
         reject();
       });
     } else {
@@ -297,6 +297,8 @@ function Volume (offset) {
       Mute();
 
     player.volume(player.volume() + offset);
+    volume = player.volume();
+    localStorage.setItem(`${videoId}-volume`, volume);
     resolve();
   });
 }
@@ -362,7 +364,6 @@ function Fullscreen () {
   });
 }
 
-let playbackRate = "";
 function PlaybackRate (direction) {
   return new Promise((resolve, reject) => {
     if (direction === 0) {
@@ -375,6 +376,7 @@ function PlaybackRate (direction) {
     const newIndex = Math.min(rates.length-1, Math.max(0, rates.indexOf(player.playbackRate())+direction));
     playbackRate = rates[newIndex];
     player.playbackRate(playbackRate);
+    localStorage.setItem(`${videoId}-playbackRate`, player.playbackRate());
     resolve();
   });
 }
@@ -444,7 +446,7 @@ function ToggleDarkMode () {
   return new Promise((resolve, reject) => {
     if (isIframe) {
       isDarkMode = !isDarkMode;
-      localStorage.setItem("darkmode", isDarkMode);
+      localStorage.setItem("vpe-darkmode", isDarkMode);
       darkModeButton.$('.vjs-icon-placeholder').textContent = isDarkMode ? "\u{263C}" : "\u{2600}";
       DispatchToParent("ToggleDarkMode");
     } else {
@@ -483,11 +485,15 @@ function HideOSD () {
  */
 
 // LocalStorage settings
-const playbackTime = isIframe ? parseFloat(localStorage.getItem(`${videoId}-time`) ?? 0) : null;
+const playbackTime = isIframe ? parseFloat(localStorage.getItem(`${videoId}-time`) ?? 0.0) : null;
+let volume = isIframe ? parseFloat(localStorage.getItem(`${videoId}-volume`) ?? -1.0) : -1.0;
+let playbackRate = isIframe ? parseFloat(localStorage.getItem(`${videoId}-playbackRate`) ?? 1.0) : null;
 let showSubtitles = isIframe ? (localStorage.getItem(`${videoId}-showSubtitles`) === 'true' ? true : false) : null;
 let subtitlesTrack = isIframe ? localStorage.getItem(`${videoId}-subtitlesTrack`) : null;
-let isDarkMode = isIframe ? (localStorage.getItem("darkmode") === "true" ? true : false) : null;
+let isDarkMode = isIframe ? (localStorage.getItem("vpe-darkmode") === "true" ? true : false) : null;
 
+
+let hasRestoredPlaybackTime = false;
 
 if (!isIframe && isDarkMode) {
   isDarkMode = false;
@@ -497,12 +503,10 @@ if (!isIframe && isDarkMode) {
 if (isIframe) {
   window.addEventListener("load", evt => {
     // restore playback position
-    let hasRestoredPlaybackTime = false;
     videojs("my-video").on("loadeddata", function(){
-      if (playbackTime !== null)
-        player.currentTime(playbackTime);
-      hasRestoredPlaybackTime = true;
-
+      RestorePlaybackTime();
+      RestoreVolume();
+      RestorePlaybackRate();
       OverrideFullscreenButton();
       AddDarkModeButton();
       AddShortcutsMenu();
@@ -514,22 +518,18 @@ if (isIframe) {
       }
     });
 
-    // Stop autoplay, unmute, and remove the unmute thing.
     videojs("my-video").on("play", evt =>{
-      if (removedUnmuteThing) return;
-      RemoveUnmuteThing();
+      if (!initialPlay)
+          return;
+      Pause();
+      ResetPlayerHasStarted();
       player.muted(false);
     });
 
-    videojs("my-video").on("pause", evt =>{
-      if (!initialPlay) return;
-      ShowPlayButton();
-    });
-
-
     // Auto-save playback position every second
     setInterval(function () {
-      if (!hasRestoredPlaybackTime) return;
+      if (!hasRestoredPlaybackTime)
+          return;
       localStorage.setItem(`${videoId}-time`, player.currentTime());
     }, 1000);
   });
@@ -553,15 +553,6 @@ function InitOSD () {
 }
 
 
-let removedUnmuteThing = false;
-function RemoveUnmuteThing ()
-{
-  if (removedUnmuteThing) return;
-  document.querySelector("#playerContainer")?.removeChild(document.querySelector("#playerContainer > button"));
-  removedUnmuteThing = true;
-}
-
-
 // API https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API
 var audioContext, audioSplitter, audioMerger, audioMediasource;
 var usingAudioContext = false;
@@ -577,6 +568,29 @@ function InitializeAudioContext () {
   usingAudioContext = true;
 }
 
+function RestorePlaybackTime () {
+  if (playbackTime === null)
+    return;
+  player.currentTime(playbackTime);
+  hasRestoredPlaybackTime = true;
+}
+
+function RestoreVolume () {
+  if (volume < 0.0)
+    return;
+  player.volume(volume);
+}
+
+function RestorePlaybackRate () {
+  if (playbackRate === null) {
+    playbackRate = 1.0;
+    return;
+  }
+  const rates = player.playbackRates();
+  const newIndex = Math.min(rates.length-1, Math.max(0, rates.indexOf(playbackRate)));
+  playbackRate = rates[newIndex];
+  player.playbackRate(playbackRate);
+}
 
 function OverrideFullscreenButton () {
   const fullscreenToggle = player.controlBar.getChild("FullscreenToggle");
@@ -643,11 +657,7 @@ function AddDarkModeButton () {
 }
 
 
-//let playButton;
-function ShowPlayButton () {
-  /*if (!playButton) {
-    playButton = player.getChild("BigPlayButton");
-  }*/
+function ResetPlayerHasStarted () {
   player.hasStarted(false);
 }
 
@@ -691,6 +701,17 @@ function AddShortcutsMenu () {
     shortcutsElements.appendChild(row);
   });
 
+  let supportLinks = document.createElement("div");
+  supportLinks.classList.add("support-links");
+  let versionInfo = "";
+  try {
+    versionInfo = GM_info.script.version;
+  } catch(e) {}
+  supportLinks.innerHTML = `GDC Vault Player Extended ${versionInfo}
+  <a href="https://github.com/Level3Manatee/GDCVaultPlayerExtended">GitHub</a> |
+  <a href="https://greasyfork.org/en/scripts/501309-gdc-vault-player-extended">GreasyFork</a>`;
+  shortcutsElements.appendChild(supportLinks);
+
   videojs.registerComponent("ShortcutsModal", videojs.extend(videojs.getComponent("ModalDialog")))
   shortcutsModal = player.addChild("ShortcutsModal", {
     label: "Shortcuts Help",
@@ -720,6 +741,14 @@ function AddShortcutsMenu () {
 function AddStyle () {
   const styleEl = document.createElement("style");
   const vaultStyle = `
+html {
+  --text-color-grey: hsl(0, 0%, 60%);
+}
+
+.text-color-grey {
+  color: var(--text-color-grey);
+}
+
 .wrapper {
     max-width: none;
     width: min-content;
@@ -766,8 +795,9 @@ function AddStyle () {
 
 html.dark {
   --dark-bg: hsl(0, 0%, 17%);
+  --text-color-grey: hsl(0, 0%, 70%);
   --color-dim: 0.75;
-  background-color: hsl(247.7, 38.6%, calc(39.6% * var(--color-dim)));
+  background-color: hsl(247.7, 38.6%, calc(39.6% * var(--color-dim) * 0.75));
 }
 
 html.dark body {
@@ -781,6 +811,11 @@ html.dark body::after {
   top: 0; right: 0; bottom: 0; left: 0;
   z-index: -1;
   background: url(https://www.gdcvault.com/img/bg.png);
+  filter: brightness(calc(var(--color-dim) * 0.75));
+}
+
+html.dark #iribbon-container,
+html.dark footer {
   filter: brightness(var(--color-dim));
 }
 
@@ -792,8 +827,13 @@ html.dark .wrapper {
   border-color: var(--dark-bg);
 }
 
+.wrapper > nav,
+#load_recommended_videos {
+  filter: brightness(var(--color-dim));
+}
+
 html.dark .logo-block {
-  filter: brightness(1.5);
+  filter: brightness(1.33);
 }
 
 html.dark .site-header #searchForm {
@@ -805,8 +845,16 @@ html.dark .site-header input#vault_keyword_search {
   color: white;
 }
 
-html.dark :is(#studio-subscription,
-ul#tags, #player #recommended img) {
+html.dark :is(a, dl:is(.player-info, .overview-section, .video-details) :is(dd, dd strong, dt, dt strong)) {
+  color: var(--text-color-grey);
+}
+
+html.dark #studio-subscription {
+  border-color: var(--text-color-grey);
+  color: var(--text-color-grey);
+}
+
+html.dark :is(ul#tags, #player #recommended img) {
   filter: invert(1) hue-rotate(180deg);
 }
 
@@ -816,13 +864,18 @@ html.dark #player #recommended img {
 
 html.dark #player #recommended #header h3,
 html.dark #player #recommended {
-  color: white;
+  color: var(--text-color-grey);
   background: var(--dark-bg);
 }`;
 
   const iFrameStyle = `
 body {
     margin: 0;
+}
+
+/* hide the unmute thing */
+#playerContainer > button {
+  display: none;
 }
 
 .vjs-modal-dialog.OSD {
@@ -846,6 +899,27 @@ body {
   font-weight: bold;
   text-align: center;
   line-height: 3;
+}
+
+.video-js .vjs-control-bar {
+  display: flex;
+}
+
+.video-js.vjs-playing:not(.vjs-user-active) .vjs-control-bar {
+  opacity: 0;
+}
+
+.video-js.vjs-has-started .vjs-big-play-button {
+    opacity: 0;
+    transition: opacity 0s;
+    pointer-events: none;
+    display: block;
+}
+
+.video-js.vjs-has-started.vjs-paused .vjs-big-play-button {
+    display: block;
+    opacity: 1;
+    transition: opacity 0.25s 0.75s;
 }
 
 .vjs-control-bar button.shortcuts-help,
@@ -892,6 +966,16 @@ body {
   border: 1px solid white;
   border-radius: 0.1em;
   min-width: 2ch;
+}
+
+.shortcuts-help .support-links {
+  border-top: 1px solid white;
+  margin-top: 0.5em;
+  padding-top: 0.5em;
+}
+
+.shortcuts-help .support-links a {
+  color: white;
 }`;
   if (isIframe)
     styleEl.textContent = iFrameStyle;
